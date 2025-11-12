@@ -1,5 +1,14 @@
 LCD driver for the Raspberry PI Installation<br>
 ====================================================
+🆕 **NEW: Ubuntu 24.04 LTS Support!** See [README-UBUNTU-24.04.md](README-UBUNTU-24.04.md) for details<br>
+====================================================
+Update: <br>
+v2.2-20241112<br>
+✅ Add Ubuntu 24.04 & 24.10 support<br>
+✅ Add kernel module availability checks<br>
+✅ Add Raspberry Pi 5 support<br>
+✅ Fix missing 20.10-64 config file<br>
+✅ Improve error handling and diagnostics<br>
 Update: <br>
 v2.1-20200927<br>
 Update all driver for 20.04<br>
@@ -47,7 +56,12 @@ And Ensure that the raspberry pi is connected to the Internet before executing t
 ```git clone https://github.com/lcdwiki/LCD-show-ubuntu.git```<br>
 ```chmod -R 755 LCD-show-ubuntu```<br>
 ```cd LCD-show-ubuntu/```<br>
-  
+
+**For Ubuntu 24.04/24.10 users:** Install required kernel modules first:<br>
+```sudo apt-get update```<br>
+```sudo apt-get install linux-modules-extra-raspi```<br>
+```sudo ./check_kernel_modules.sh```<br>
+
 3.)Step3, According to your LCD's type, excute:
 ====================================================
 In case of 2.4" RPi Display(MPI2401)<br>

@@ -1,103 +1,222 @@
 #!/bin/bash
 
+echo "========================================"
+echo "LCD35 (3.5\" TFT) Installation Script"
+echo "========================================"
+echo ""
+
+# Check if running on Raspberry Pi
+if ! grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null && ! grep -q "BCM" /proc/cpuinfo 2>/dev/null; then
+    echo "⚠ WARNING: This system may not be a Raspberry Pi"
+    echo "This driver is designed for Raspberry Pi hardware."
+    read -p "Do you want to continue anyway? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
+echo "Step 1: Backing up current configuration..."
 sudo ./system_backup.sh
 
-#version=`lsb_release -r | awk -F ' '  '{printf $NF}'`
-
+echo ""
+echo "Step 2: Detecting system configuration..."
 source ./system_config.sh
 
+echo "  Ubuntu Version: $version"
+echo "  Architecture: ${hardware_arch}-bit"
+
+echo ""
+echo "Step 3: Checking kernel module availability..."
+# Quick check for critical modules
+MODULE_WARNING=false
+if ! modinfo fbtft &>/dev/null && ! modinfo fb_ili9486 &>/dev/null; then
+    if [ ! -f /boot/config-$(uname -r) ] || ! grep -q "CONFIG_FB_TFT" /boot/config-$(uname -r) 2>/dev/null; then
+        echo "⚠ WARNING: fbtft kernel modules may not be available!"
+        echo "  For detailed module check, run: sudo ./check_kernel_modules.sh"
+        MODULE_WARNING=true
+    fi
+fi
+
+if [ "$MODULE_WARNING" = true ]; then
+    echo ""
+    echo "  The required kernel modules may not be installed."
+    echo "  You may need to install: sudo apt-get install linux-modules-extra-raspi"
+    echo ""
+    read -p "Do you want to continue anyway? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Installation cancelled. Please install required kernel modules first."
+        exit 1
+    fi
+else
+    echo "  ✓ Kernel modules appear to be available"
+fi
+
+echo ""
+echo "Step 4: Configuring X11 display settings..."
 if [ -f /etc/X11/xorg.conf.d/40-libinput.conf ]; then
 sudo rm -rf /etc/X11/xorg.conf.d/40-libinput.conf
 fi
 if [ ! -d /etc/X11/xorg.conf.d ]; then
 sudo mkdir -p /etc/X11/xorg.conf.d
 fi
+
+echo ""
+echo "Step 5: Installing device tree overlay..."
+# Ubuntu 20.10+ (including 22.04, 24.04) uses updated device tree
 if [ "$version" = "20.10" ] || [[ "$version" > "20.10" ]]; then
-sudo cp ./usr/tft35a-overlay-20.10.dtb /boot/firmware/overlays/tft35a-overlay.dtb
-sudo cp ./usr/tft35a-overlay-20.10.dtb /boot/firmware/overlays/tft35a.dtbo
+    echo "  Using device tree overlay for Ubuntu 20.10+"
+    sudo cp ./usr/tft35a-overlay-20.10.dtb /boot/firmware/overlays/tft35a-overlay.dtb
+    sudo cp ./usr/tft35a-overlay-20.10.dtb /boot/firmware/overlays/tft35a.dtbo
 else
-sudo cp ./usr/tft35a-overlay.dtb /boot/firmware/overlays/
-sudo cp ./usr/tft35a-overlay.dtb /boot/firmware/overlays/tft35a.dtbo
+    echo "  Using device tree overlay for Ubuntu < 20.10"
+    sudo cp ./usr/tft35a-overlay.dtb /boot/firmware/overlays/
+    sudo cp ./usr/tft35a-overlay.dtb /boot/firmware/overlays/tft35a.dtbo
 fi
 
+if [ ! -f /boot/firmware/overlays/tft35a.dtbo ]; then
+    echo "  ✗ ERROR: Failed to copy device tree overlay!"
+    exit 1
+else
+    echo "  ✓ Device tree overlay installed successfully"
+fi
+
+echo ""
+echo "Step 6: Configuring framebuffer driver..."
 if [[ "$version" < "20.04" ]]; then
-#sudo cp -rf ./boot/config-nomal.txt ./boot/config.txt.bak
-sudo cp -rf ./usr/99-fbturbo.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
+    sudo cp -rf ./usr/99-fbturbo.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
+    echo "  Using standard fbturbo configuration"
 else
-if [[ "$version" = "20.04" ]]; then
-#sudo cp -rf ./boot/config-nomal-20.04.txt ./boot/config.txt.bak
-sudo cp -rf ./usr/99-fbturbo-20.04.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
-else
-sudo cp -rf ./usr/99-fbturbo.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
+    if [[ "$version" = "20.04" ]]; then
+        sudo cp -rf ./usr/99-fbturbo-20.04.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
+        echo "  Using Ubuntu 20.04 specific fbturbo configuration"
+    else
+        sudo cp -rf ./usr/99-fbturbo.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
+        echo "  Using standard fbturbo configuration (Ubuntu ${version})"
+    fi
+    # Disable vc4-fkms-v3d which conflicts with fbtft drivers
+    row=`grep -nr "dtoverlay=vc4-fkms-v3d" ./boot/config.txt.bak | awk -F ':' '{if(NR==1)printf $1}'`
+    if [ ! -z "$row" ]; then
+        sudo sed -i -e ''"$row"'s/dtoverlay=vc4-fkms-v3d/#dtoverlay=vc4-fkms-v3d/' ./boot/config.txt.bak
+        echo "  ✓ Disabled vc4-fkms-v3d overlay (conflicts with LCD driver)"
+    fi
 fi
-row=`grep -nr "dtoverlay=vc4-fkms-v3d" ./boot/config.txt.bak | awk -F ':' '{if(NR==1)printf $1}'`
-sudo sed -i -e ''"$row"'s/dtoverlay=vc4-fkms-v3d/#dtoverlay=vc4-fkms-v3d/' ./boot/config.txt.bak
-fi
+echo ""
+echo "Step 7: Updating boot configuration..."
 sudo echo "hdmi_force_hotplug=1" >> ./boot/config.txt.bak
 sudo echo "dtparam=i2c_arm=on" >> ./boot/config.txt.bak
 sudo echo "dtparam=spi=on" >> ./boot/config.txt.bak
 sudo echo "enable_uart=1" >> ./boot/config.txt.bak
 sudo echo "dtoverlay=tft35a:rotate=90" >> ./boot/config.txt.bak
+echo "  ✓ Enabled I2C, SPI, and UART interfaces"
+echo "  ✓ Configured LCD35 device tree overlay (90° rotation)"
 sudo cp -rf ./boot/config.txt.bak /boot/firmware/config.txt
-
-if [ "$version" = "20.10" ] || [[ "$version" > "20.10" ]]; then
-sudo cp -rf ./usr/99-calibration.conf-35-270  /etc/X11/xorg.conf.d/99-calibration.conf
+if [ $? -eq 0 ]; then
+    echo "  ✓ Boot configuration updated successfully"
 else
-sudo cp -rf ./usr/99-calibration.conf-35-90  /etc/X11/xorg.conf.d/99-calibration.conf
+    echo "  ✗ ERROR: Failed to update boot configuration!"
+    exit 1
 fi
-#sudo cp -rf ./usr/99-fbturbo.conf  /usr/share/X11/xorg.conf.d/99-fbturbo.conf
-#if [ -b /dev/mmcblk0p7 ]; then
-#sudo cp ./usr/cmdline.txt-noobs /boot/firmware/cmdline.txt
-#else
-#sudo cp ./usr/cmdline.txt /boot/firmware/
-#fi
-#sudo cp ./usr/inittab /etc/
-#sudo cp ./boot/config-35.txt /boot/firmware/config.txt
+
+echo ""
+echo "Step 8: Configuring touchscreen calibration..."
+if [ "$version" = "20.10" ] || [[ "$version" > "20.10" ]]; then
+    sudo cp -rf ./usr/99-calibration.conf-35-270  /etc/X11/xorg.conf.d/99-calibration.conf
+    echo "  Using calibration for Ubuntu 20.10+ (270° orientation)"
+else
+    sudo cp -rf ./usr/99-calibration.conf-35-90  /etc/X11/xorg.conf.d/99-calibration.conf
+    echo "  Using calibration for Ubuntu < 20.10 (90° orientation)"
+fi
+if [ $? -eq 0 ]; then
+    echo "  ✓ Touchscreen calibration configured"
+else
+    echo "  ⚠ WARNING: Failed to configure touchscreen calibration"
+fi
 sudo touch ./.have_installed
 echo "gpio:resistance:35:90:480:320" > ./.have_installed
-#evdev install
-#nodeplatform=`uname -n`
-#kernel=`uname -r`
-#version=`lsb_release -r | awk -F ' '  '{printf $NF}'`
-#if test "$nodeplatform" = "raspberrypi";then
-#echo "this is raspberrypi kernel"
-#version=${version%% *}
-#version=${version#*#}
-#echo $version
+
+echo ""
+echo "Step 9: Installing touch input driver..."
 if [ "$version" = "18.04" ] || [[ "$version" > "18.04" ]]; then
-#echo "reboot"
-#else
-echo "need to update touch configuration"
-wget --spider -q -o /dev/null --tries=1 -T 10 https://www.x.org
-if [ $? -eq 0 ]; then
-sudo apt-get update
-sudo apt-get install xserver-xorg-input-evdev  2> error_output.txt
+echo "  Installing xserver-xorg-input-evdev for touch support..."
+    # Check for internet connectivity
+    wget --spider -q -o /dev/null --tries=1 -T 10 https://www.x.org
+    if [ $? -eq 0 ]; then
+        echo "  Downloading from repository..."
+        sudo apt-get update -qq
+        sudo apt-get install -y xserver-xorg-input-evdev 2> error_output.txt
+    else
+        echo "  No internet connection, using offline package..."
+        if [ $hardware_arch -eq 32 ]; then
+            sudo dpkg -i -B ./xserver-xorg-input-evdev_2.10.5-1_armhf.deb 2> error_output.txt
+        elif [ $hardware_arch -eq 64 ]; then
+            sudo dpkg -i -B ./xserver-xorg-input-evdev_1%3a2.10.6-1_arm64.deb 2> error_output.txt
+        fi
+    fi
+
+    # Check installation result
+    result=`cat ./error_output.txt 2>/dev/null`
+    if grep -q "error:" ./error_output.txt 2>/dev/null; then
+        echo -e "  \033[31m✗ ERROR: Failed to install evdev driver\033[0m"
+        echo -e "\033[31m$result\033[0m"
+        exit 1
+    else
+        echo "  ✓ Evdev driver installed successfully"
+    fi
+
+    # Copy evdev configuration
+    if [ -f /usr/share/X11/xorg.conf.d/10-evdev.conf ]; then
+        sudo cp -rf /usr/share/X11/xorg.conf.d/10-evdev.conf /usr/share/X11/xorg.conf.d/45-evdev.conf
+        echo "  ✓ Evdev configuration copied"
+    else
+        echo "  ℹ Evdev configuration file not found (this may be normal on some systems)"
+    fi
 else
-if [ $hardware_arch -eq 32 ]; then
-sudo dpkg -i -B ./xserver-xorg-input-evdev_2.10.5-1_armhf.deb 2> error_output.txt
-elif [ $hardware_arch -eq 64 ]; then
-sudo dpkg -i -B ./xserver-xorg-input-evdev_1%3a2.10.6-1_arm64.deb 2> error_output.txt
-fi
-fi
-#sudo apt-get install xserver-xorg-input-evdev  2> error_output.txt
-result=`cat ./error_output.txt`
-echo -e "\033[31m$result\033[0m"
-grep -q "error:" ./error_output.txt && exit
-sudo cp -rf /usr/share/X11/xorg.conf.d/10-evdev.conf /usr/share/X11/xorg.conf.d/45-evdev.conf
-#echo "reboot"
-#fi
-else
-echo "This version is lower than ubuntu 18.04, no need to update touch configure, reboot"
+    echo "  Ubuntu version < 18.04 detected"
+    echo "  ℹ No evdev driver update needed for this version"
 fi
 
+echo ""
+echo "Step 10: Finalizing installation..."
 sudo sync
 sudo sync
-sleep 1
+echo "  ✓ File system synchronized"
+
 if [ $# -eq 1 ]; then
-sudo ./rotate.sh $1
+    echo ""
+    echo "Applying custom rotation: $1 degrees..."
+    sudo ./rotate.sh $1
 elif [ $# -gt 1 ]; then
-echo "Too many parameters"
+    echo "  ⚠ WARNING: Too many parameters provided"
+    echo "  Usage: $0 [rotation_angle]"
+    echo "  Valid rotation angles: 0, 90, 180, 270"
 fi
 
-echo "reboot now"
+echo ""
+echo "========================================"
+echo "Installation Complete!"
+echo "========================================"
+echo ""
+echo "The system will now reboot to apply changes."
+echo "After reboot, your LCD35 display should be active."
+echo ""
+echo "If the display doesn't work after reboot:"
+echo "  1. Run: sudo ./check_kernel_modules.sh"
+echo "  2. Check /boot/firmware/config.txt"
+echo "  3. Verify SPI is enabled: ls /dev/spidev*"
+echo ""
+echo "To change rotation later, run:"
+echo "  sudo ./rotate.sh [0|90|180|270]"
+echo ""
+echo "To restore HDMI output, run:"
+echo "  sudo ./LCD-hdmi"
+echo ""
+sleep 2
+echo "Rebooting in 3 seconds..."
+sleep 1
+echo "Rebooting in 2 seconds..."
+sleep 1
+echo "Rebooting in 1 second..."
+sleep 1
 sudo reboot
